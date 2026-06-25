@@ -20,7 +20,7 @@ from deep_translator import GoogleTranslator
 IS_COLAB = 'google.colab' in sys.modules or os.path.exists('/content')
 
 # =========================================================================
-# ⚙️ MAIN SETTINGS (Only matters if running inside Google Colab)
+# ⚙️ MAIN SETTINGS 
 # =========================================================================
 SAVE_MODELS_TO_DRIVE = False
 # =========================================================================
