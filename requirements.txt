@@ -1,0 +1,9 @@
+torch
+soundfile
+gradio
+transformers
+accelerate
+qwen_tts
+librosa
+openai-whisper
+deep-translator
