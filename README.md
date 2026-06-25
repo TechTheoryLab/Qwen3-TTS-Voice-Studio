@@ -25,3 +25,4 @@ Audio transcription and Subtitles powered by OpenAI Whisper.
 🎥 Watch the Tutorial
 Want a full step-by-step walkthrough on how to make viral shorts and podcasts with this tool?
 ▶️ Subscribe to Tech Theory Lab on YouTube and check out our detailed guide!
+https://www.youtube.com/@TechTheoryLab
