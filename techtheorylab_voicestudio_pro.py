@@ -16,6 +16,7 @@ drive.mount('/content/drive')
 
 # 2. Install required libraries
 print("Installing dependencies...")
+pip install -q torch soundfile gradio transformers accelerate qwen_tts
 
 print("✅ Drive mounted and dependencies installed! Move on to Cell 2.")
 
