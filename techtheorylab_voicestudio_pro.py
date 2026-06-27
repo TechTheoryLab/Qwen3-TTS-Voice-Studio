@@ -12,8 +12,6 @@ import numpy as np
 import librosa
 import whisper
 import gc
-import subprocess
-import tempfile
 from deep_translator import GoogleTranslator
 
 # =========================================================================
@@ -45,10 +43,8 @@ os.makedirs(clone_audio_folder, exist_ok=True)
 presets_file = os.path.join(presets_master_folder, "voice_presets.json")
 clone_presets_file = os.path.join(presets_master_folder, "clone_presets.json")
 
-FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
-
 # =========================================================================
-# 🧠 VRAM TELEMETRY & AUTO-SWAPPER (OPTIMIZED)
+# 🧠 VRAM TELEMETRY & AUTO-SWAPPER
 # =========================================================================
 model_base = None
 model_design = None
@@ -69,49 +65,30 @@ def manual_clear_vram():
     model_design = None
     current_model_loaded = None
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return f"🧹 GPU Memory Cleared! Ready to load fresh models.\n{get_vram_status()}"
-
-def _safe_from_pretrained(model_id, device, dtype):
-    try:
-        return Qwen3TTSModel.from_pretrained(model_id, device_map=device, dtype=dtype, attn_implementation="sdpa")
-    except Exception as e:
-        if "cuda" in str(device).lower() and dtype == torch.bfloat16:
-            try:
-                return Qwen3TTSModel.from_pretrained(model_id, device_map=device, dtype=torch.float16, attn_implementation="sdpa")
-            except Exception:
-                pass
-        return Qwen3TTSModel.from_pretrained(model_id, device_map="cpu")
+    torch.cuda.empty_cache()
+    return "🧹 GPU Memory Cleared! Ready to load fresh models.", get_vram_status()
 
 def switch_vram_model(target):
     global model_base, model_design, current_model_loaded
     if current_model_loaded == target: return
 
     print(f"🔄 VRAM Manager: Loading Qwen3 {target.upper()}...")
-    try:
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    if target == "base":
+        if model_design is not None: del model_design
+        model_design = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        model_base = Qwen3TTSModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base", device_map="cuda:0", dtype=torch.bfloat16, attn_implementation="sdpa")
+    elif target == "design":
+        if model_base is not None: del model_base
+        model_base = None
+        gc.collect()
+        torch.cuda.empty_cache()
+        model_design = Qwen3TTSModel.from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", device_map="cuda:0", dtype=torch.bfloat16, attn_implementation="sdpa")
 
-        if target == "base":
-            if model_design is not None: del model_design
-            global model_design; model_design = None
-            gc.collect(); 
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
-            model_base = _safe_from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base", device, dtype)
-        elif target == "design":
-            if model_base is not None: del model_base
-            global model_base; model_base = None
-            gc.collect(); 
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
-            model_design = _safe_from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", device, dtype)
+    current_model_loaded = target
 
-        current_model_loaded = target
-    except Exception as e:
-        current_model_loaded = None
-        raise e
-
-# Deferred model loading: We removed the immediate `switch_vram_model` call here so the app opens instantly.
+switch_vram_model("design")
 print("Loading Whisper for Subtitles...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
 whisper_model = whisper.load_model("base", device=device)
@@ -122,13 +99,17 @@ whisper_model = whisper.load_model("base", device=device)
 QWEN_LANGUAGES = ["Auto", "English", "Chinese", "Japanese", "Korean", "French", "German", "Spanish"]
 
 def master_text_processor(text, lexicon_data):
+    """Auto-formats finance terms & applies user custom pronunciation dictionary."""
     if not text: return text
+    
+    # 1. Financial Regex (Translates $39.2 trillion -> 39 point 2 trillion dollars)
     text = re.sub(r'\$(\d+(?:\.\d+)?)\s*trillion', r'\1 trillion dollars', text, flags=re.IGNORECASE)
     text = re.sub(r'\$(\d+(?:\.\d+)?)\s*billion', r'\1 billion dollars', text, flags=re.IGNORECASE)
     text = re.sub(r'\$(\d+(?:\.\d+)?)\s*million', r'\1 million dollars', text, flags=re.IGNORECASE)
     text = re.sub(r'(\d+)\.(\d+)%', r'\1 point \2 percent', text)
     text = re.sub(r'(\d+)%', r'\1 percent', text)
     
+    # 2. Custom Lexicon (e.g. PCE -> P C E)
     if lexicon_data:
         for row in lexicon_data:
             if len(row) >= 2 and str(row[0]).strip() and str(row[1]).strip():
@@ -144,15 +125,15 @@ def split_text_into_chunks(text):
     return valid_chunks
 
 def preview_chunks(text):
-    if not text.strip(): return gr.update(visible=True, value="⚠️ Please enter a script first.")
+    if not text.strip(): return "⚠️ Please enter a script first."
     chunks = split_text_into_chunks(text)
-    return gr.update(visible=True, value="\n\n---\n\n".join([f"[{i+1}] {c}" for i, c in enumerate(chunks)]))
+    return "\n\n---\n\n".join([f"[{i+1}] {c}" for i, c in enumerate(chunks)])
 
 def format_timestamp(seconds):
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     secs = int(seconds % 60)
-    millisecs = round((seconds - int(seconds)) * 1000)
+    millisecs = int((seconds - int(seconds)) * 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millisecs:03d}"
 
 def write_srt_file(segments, file_path):
@@ -169,17 +150,12 @@ def mix_background_music(voice_y, voice_sr, bgm_path, bgm_vol):
     return mixed
 
 def convert_audio_format(wav_file, target_format):
-    target = target_format.lower().strip()
-    if target == "wav": return wav_file
-    out_file = wav_file.rsplit('.', 1)[0] + f".{target}"
-    try:
-        subprocess.run([FFMPEG_BIN, "-y", "-i", wav_file, "-q:a", "0", out_file], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if os.path.exists(wav_file) and os.path.exists(out_file):
-            os.remove(wav_file)
-        return out_file
-    except Exception as e:
-        print(f"FFmpeg conversion failed: {e}. Falling back to WAV.")
-        return wav_file
+    target_format = target_format.lower().strip()
+    if target_format == "wav": return wav_file
+    out_file = wav_file.rsplit('.', 1)[0] + f".{target_format}"
+    os.system(f"ffmpeg -y -i '{wav_file}' -q:a 0 '{out_file}' -loglevel error")
+    if os.path.exists(wav_file) and os.path.exists(out_file): os.remove(wav_file)
+    return out_file
 
 def process_audio_studio(audio_path, do_norm, do_trim, speed, do_srt, bgm_path, bgm_vol, out_format="WAV", progress=gr.Progress()):
     if not audio_path: return None, None, "⚠️ Please upload an audio file."
@@ -230,18 +206,8 @@ def process_audio_studio(audio_path, do_norm, do_trim, speed, do_srt, bgm_path, 
     except Exception as e: return None, None, f"❌ Error: {str(e)}"
 
 # =========================================================================
-# 💾 ATOMIC PRESET LOGIC (Prevents File Corruption)
+# 💾 PRESET LOGIC
 # =========================================================================
-def atomic_write_json(path, data):
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(path))
-    try:
-        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, path)
-    except Exception as e:
-        if os.path.exists(tmp_path): os.remove(tmp_path)
-        raise e
-
 def load_presets():
     if os.path.exists(presets_file):
         with open(presets_file, "r") as f: return json.load(f)
@@ -252,7 +218,7 @@ def save_preset_to_drive(name, desc, lang):
     if not name: return gr.update(), "⚠️ Provide a preset name."
     presets = load_presets()
     presets[name] = {"desc": desc, "lang": lang}
-    atomic_write_json(presets_file, presets)
+    with open(presets_file, "w") as f: json.dump(presets, f)
     return gr.update(choices=list(presets.keys()), value=name), f"✅ Saved preset: {name}"
 
 def load_clone_presets():
@@ -269,18 +235,8 @@ def save_clone_preset(name, audio_path, ref_text, lang):
     shutil.copy(audio_path, permanent_audio_path)
     presets = load_clone_presets()
     presets[name] = {"audio_path": permanent_audio_path, "ref_text": ref_text if ref_text else "", "lang": lang}
-    atomic_write_json(clone_presets_file, presets)
+    with open(clone_presets_file, "w") as f: json.dump(presets, f)
     return gr.update(choices=list(presets.keys()), value=name), f"✅ Saved: {name}"
-
-def apply_preset(name):
-    presets = load_presets()
-    if name in presets: return presets[name]["desc"], presets[name]["lang"]
-    return "", "Auto"
-
-def apply_clone_preset(name):
-    presets = load_clone_presets()
-    if name in presets: return presets[name]["audio_path"], presets[name]["ref_text"], presets[name]["lang"]
-    return None, "", "Auto"
 
 # =========================================================================
 # 🎙️ GENERATION ENGINES (Master, Podcast, Batch)
@@ -301,14 +257,8 @@ def master_generate(text, lang, model_type, custom_filename, use_chunking, out_f
             if not chunk.strip(): continue
             if progress: progress(0.1 + (0.6 * (idx / max(1, len(chunks_to_process)))), desc=f"Generating chunk {idx+1}/{len(chunks_to_process)}...")
             
-            with torch.no_grad():
-                if torch.cuda.is_available():
-                    with torch.cuda.amp.autocast():
-                        if model_type == "design": wavs, sr = model_design.generate_voice_design(text=chunk, language=lang, instruct=desc, non_streaming_mode=True)
-                        else: wavs, sr = model_base.generate_voice_clone(language=lang, text=chunk, ref_audio=ref_audio, ref_text=ref_text if not x_vector else None)
-                else:
-                    if model_type == "design": wavs, sr = model_design.generate_voice_design(text=chunk, language=lang, instruct=desc, non_streaming_mode=True)
-                    else: wavs, sr = model_base.generate_voice_clone(language=lang, text=chunk, ref_audio=ref_audio, ref_text=ref_text if not x_vector else None)
+            if model_type == "design": wavs, sr = model_design.generate_voice_design(text=chunk, language=lang, instruct=desc, non_streaming_mode=True)
+            else: wavs, sr = model_base.generate_voice_clone(language=lang, text=chunk, ref_audio=ref_audio, ref_text=ref_text if not x_vector else None)
             
             sample_rate = sr
             generated_audio_segments.append(wavs[0].cpu().numpy() if torch.is_tensor(wavs[0]) else wavs[0])
@@ -392,13 +342,7 @@ def run_podcast_engine(script_text, lang, do_norm, do_trim, do_srt, out_format, 
                 audio_path = speaker_info["audio"] if speaker_info["type"] == "upload" else presets[speaker_info["preset_name"]]["audio_path"]
                 ref_text = speaker_info["ref_text"] if speaker_info["type"] == "upload" else presets[speaker_info["preset_name"]]["ref_text"]
 
-                with torch.no_grad():
-                    if torch.cuda.is_available():
-                        with torch.cuda.amp.autocast():
-                            wavs, sr = model_base.generate_voice_clone(language=lang, text=text, ref_audio=audio_path, ref_text=ref_text)
-                    else:
-                        wavs, sr = model_base.generate_voice_clone(language=lang, text=text, ref_audio=audio_path, ref_text=ref_text)
-                
+                wavs, sr = model_base.generate_voice_clone(language=lang, text=text, ref_audio=audio_path, ref_text=ref_text)
                 sr_final = sr
                 segments.append(wavs[0].cpu().numpy() if torch.is_tensor(wavs[0]) else wavs[0])
                 segments.append(np.zeros(int(0.5 * sr_final), dtype=segments[-1].dtype))
@@ -459,18 +403,14 @@ def run_batch(mode, text_list, lang, desc, clone_preset, custom_prefix, do_srt, 
         yield None, "\n".join(status_log), grid_data
 
         for i, raw_line in enumerate(lines):
+            # Apply Normalizer & Lexicon
             line = master_text_processor(raw_line, lex)
+            
             progress((i+1)/len(lines), desc=f"Processing {i+1}/{len(lines)}...")
             wav_filepath = os.path.join(batch_folder, f"{prefix}_{str(i+1).zfill(2)}_{lang}.wav")
             
-            with torch.no_grad():
-                if torch.cuda.is_available():
-                    with torch.cuda.amp.autocast():
-                        if mode == "Voice Design": wavs, sr = model_design.generate_voice_design(text=line, language=lang, instruct=desc, non_streaming_mode=True)
-                        else: wavs, sr = model_base.generate_voice_clone(language=lang, text=line, ref_audio=audio_path, ref_text=ref_text)
-                else:
-                    if mode == "Voice Design": wavs, sr = model_design.generate_voice_design(text=line, language=lang, instruct=desc, non_streaming_mode=True)
-                    else: wavs, sr = model_base.generate_voice_clone(language=lang, text=line, ref_audio=audio_path, ref_text=ref_text)
+            if mode == "Voice Design": wavs, sr = model_design.generate_voice_design(text=line, language=lang, instruct=desc, non_streaming_mode=True)
+            else: wavs, sr = model_base.generate_voice_clone(language=lang, text=line, ref_audio=audio_path, ref_text=ref_text)
             
             sf.write(wav_filepath, wavs[0].cpu().numpy() if torch.is_tensor(wavs[0]) else wavs[0], sr)
 
@@ -482,9 +422,12 @@ def run_batch(mode, text_list, lang, desc, clone_preset, custom_prefix, do_srt, 
 
             final_base_file = convert_audio_format(wav_filepath, out_format)
             all_downloadable_files.append(final_base_file)
+            
+            # Live Data Grid Update
             grid_data.append([os.path.basename(final_base_file), lang, f"{os.path.getsize(final_base_file)/1024:.1f} KB"])
             yield None, f"⏳ Processed {i+1}/{len(lines)}...", grid_data
 
+            # TARGET LANGUAGES DUBBING
             for g_lang in target_langs:
                 if g_lang == lang: continue
                 code = lang_map.get(g_lang, "en")
@@ -492,14 +435,8 @@ def run_batch(mode, text_list, lang, desc, clone_preset, custom_prefix, do_srt, 
                 translated = master_text_processor(translated, lex)
 
                 g_wav_filepath = os.path.join(batch_folder, f"{prefix}_{str(i+1).zfill(2)}_{g_lang}.wav")
-                with torch.no_grad():
-                    if torch.cuda.is_available():
-                        with torch.cuda.amp.autocast():
-                            if mode == "Voice Design": g_wavs, sr = model_design.generate_voice_design(text=translated, language=g_lang, instruct=desc, non_streaming_mode=True)
-                            else: g_wavs, sr = model_base.generate_voice_clone(language=g_lang, text=translated, ref_audio=audio_path, ref_text=ref_text)
-                    else:
-                        if mode == "Voice Design": g_wavs, sr = model_design.generate_voice_design(text=translated, language=g_lang, instruct=desc, non_streaming_mode=True)
-                        else: g_wavs, sr = model_base.generate_voice_clone(language=g_lang, text=translated, ref_audio=audio_path, ref_text=ref_text)
+                if mode == "Voice Design": g_wavs, sr = model_design.generate_voice_design(text=translated, language=g_lang, instruct=desc, non_streaming_mode=True)
+                else: g_wavs, sr = model_base.generate_voice_clone(language=g_lang, text=translated, ref_audio=audio_path, ref_text=ref_text)
                 
                 sf.write(g_wav_filepath, g_wavs[0].cpu().numpy() if torch.is_tensor(g_wavs[0]) else g_wavs[0], sr)
 
@@ -555,6 +492,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
     </div>
     """)
 
+    # 🟢 NEW: Global VRAM Telemetry Row
     with gr.Row():
         clear_vram_btn = gr.Button("🧹 Clear GPU Memory", variant="stop", scale=1)
         vram_refresh_btn = gr.Button("🔄 Refresh Stats", scale=1)
@@ -563,6 +501,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
     clear_vram_btn.click(fn=manual_clear_vram, outputs=[vram_status])
     vram_refresh_btn.click(fn=get_vram_status, outputs=[vram_status])
 
+    # 🟢 NEW: Hidden Shared State for Global Dictionary
     global_lexicon = gr.State([["PCE", "P C E"], ["Fed", "Federal Reserve"]])
 
     with gr.Tabs():
@@ -580,6 +519,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
                     
                     vd_desc = gr.Textbox(label="Voice Description", lines=2, placeholder="e.g., A confident female news anchor.")
 
+                    # 🟢 NEW: Collapsible Advanced Settings & Tooltips
                     with gr.Accordion("⚙️ Advanced Processing Options", open=False):
                         with gr.Row():
                             vd_chunking = gr.Checkbox(label="🔪 Auto-Chunking", value=False, info="Splits long text to avoid crashes.")
@@ -609,7 +549,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
                     vd_download = gr.File(label="📥 Download Files", file_count="multiple", interactive=False)
                     vd_status = gr.Textbox(label="Status Console", lines=3, elem_classes=["pro-console"])
 
-            vd_preview_btn.click(fn=preview_chunks, inputs=[vd_text], outputs=[vd_chunk_preview])
+            # Wiring
+            vd_preview_btn.click(fn=lambda text: (gr.update(visible=True), preview_chunks(text)), inputs=[vd_text], outputs=[vd_chunk_preview, vd_chunk_preview])
             vd_preset_dropdown.change(fn=lambda n: apply_preset(n), inputs=[vd_preset_dropdown], outputs=[vd_desc, vd_lang])
             vd_save_preset_btn.click(fn=save_preset_to_drive, inputs=[vd_preset_name, vd_desc, vd_lang], outputs=[vd_preset_dropdown, vd_status])
             vd_event = vd_btn.click(fn=btn_design_wrapper, inputs=[vd_text, vd_lang, vd_filename, vd_chunking, vd_format, vd_desc, vd_norm, vd_trim, vd_srt, global_lexicon], outputs=[vd_audio, vd_download, vd_status])
@@ -657,7 +598,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
                     vc_download = gr.File(label="📥 Download Files", file_count="multiple", interactive=False)
                     vc_status = gr.Textbox(label="Status Console", lines=3, elem_classes=["pro-console"])
 
-            vc_preview_btn.click(fn=preview_chunks, inputs=[vc_target_text], outputs=[vc_chunk_preview])
+            # Wiring
+            vc_preview_btn.click(fn=lambda text: (gr.update(visible=True), preview_chunks(text)), inputs=[vc_target_text], outputs=[vc_chunk_preview, vc_chunk_preview])
             vc_preset_dropdown.change(fn=apply_clone_preset, inputs=[vc_preset_dropdown], outputs=[vc_ref_audio, vc_ref_text, vc_lang])
             vc_save_preset_btn.click(fn=save_clone_preset, inputs=[vc_preset_name, vc_ref_audio, vc_ref_text, vc_lang], outputs=[vc_preset_dropdown, vc_status])
             vc_event = vc_btn.click(fn=btn_clone_wrapper, inputs=[vc_target_text, vc_lang, vc_filename, vc_chunking, vc_format, vc_ref_audio, vc_ref_text, vc_xvector, vc_norm, vc_trim, vc_srt, global_lexicon], outputs=[vc_audio, vc_download, vc_status])
@@ -696,6 +638,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
                     batch_downloads = gr.File(label="📥 Download ZIP Archive", interactive=False)
                     batch_status = gr.Textbox(label="Batch Console", interactive=False, lines=2, elem_classes=["pro-console"])
                     
+                    # 🟢 NEW: Live Dynamic Data Grid
                     gr.Markdown("### 📊 Live Batch Overview")
                     batch_grid = gr.Dataframe(headers=["Generated File", "Language", "Size"], interactive=False, col_count=(3, "fixed"))
 
@@ -787,7 +730,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
             pp_event = pp_btn.click(fn=process_audio_studio, inputs=[pp_audio_in, pp_norm, pp_trim, pp_speed, pp_srt, pp_bgm_in, pp_bgm_vol, pp_format], outputs=[pp_audio_out, pp_downloads, pp_status])
             pp_stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[pp_event])
 
-        # --- TAB 6: GLOBAL STUDIO SETTINGS ---
+        # --- TAB 6: GLOBAL STUDIO SETTINGS (NEW) ---
         with gr.Tab("Global Studio Settings"):
             gr.Markdown("### 📖 Custom Pronunciation Lexicon")
             gr.Markdown("Teach the AI how to perfectly pronounce acronyms, metrics, or custom names. *(e.g., Target: **PCE**, Replacement: **P C E**)*. This applies automatically across **all** generation tabs.")
@@ -800,6 +743,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
             )
             
             gr.Markdown("*Note: Large numbers starting with `$` and ending in `trillion/billion/million` or ending in `%` are now automatically normalized natively by the Pro Engine.*")
+            
+            # Tie the UI table to the hidden global state variable
             lexicon_table.change(fn=lambda x: x, inputs=[lexicon_table], outputs=[global_lexicon])
 
 print("Starting Tech Theory Lab Pro Studio...")
