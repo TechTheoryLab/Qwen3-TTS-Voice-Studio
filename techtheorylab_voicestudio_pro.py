@@ -48,7 +48,7 @@ clone_presets_file = os.path.join(presets_master_folder, "clone_presets.json")
 FFMPEG_BIN = shutil.which("ffmpeg") or "ffmpeg"
 
 # =========================================================================
-# 🧠 VRAM TELEMETRY & AUTO-SWAPPER (OPTIMIZED)
+# 🧠 DYNAMIC HARDWARE LEVEL VRAM TELEMETRY
 # =========================================================================
 model_base = None
 model_design = None
@@ -56,10 +56,14 @@ current_model_loaded = None
 
 def get_vram_status():
     if torch.cuda.is_available():
+        # Get live allocation and hardware specifications dynamically
         a = torch.cuda.memory_allocated(0) / 1e9
         r = torch.cuda.memory_reserved(0) / 1e9
-        return f"🟢 GPU VRAM: {a:.2f} GB Used / {r:.2f} GB Reserved"
-    return "🖥️ Running on CPU (No VRAM)"
+        t = torch.cuda.get_device_properties(0).total_memory / 1e9
+        gpu_name = torch.cuda.get_device_name(0) # Dynamically scans and identifies the running GPU model
+        
+        return f"<div class='vram-badge'>🟢 Hardware: <b>{gpu_name}</b> &nbsp;|&nbsp; VRAM Used: <b>{a:.2f} GB</b> &nbsp;|&nbsp; Cached: <b>{r:.2f} GB</b> &nbsp;|&nbsp; Total: <b>{t:.2f} GB</b></div>"
+    return "<div class='vram-badge' style='color: #ef4444;'>🖥️ Running on CPU (No VRAM Detected)</div>"
 
 def manual_clear_vram():
     global model_base, model_design, current_model_loaded
@@ -71,7 +75,7 @@ def manual_clear_vram():
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return f"🧹 GPU Memory Cleared! Ready to load fresh models.\n{get_vram_status()}"
+    return get_vram_status()
 
 def _safe_from_pretrained(model_id, device, dtype):
     try:
@@ -95,13 +99,13 @@ def switch_vram_model(target):
 
         if target == "base":
             if model_design is not None: del model_design
-            model_design = None  # FIXED: Removed the duplicate "global" tag here
+            model_design = None  
             gc.collect(); 
             if torch.cuda.is_available(): torch.cuda.empty_cache()
             model_base = _safe_from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-Base", device, dtype)
         elif target == "design":
             if model_base is not None: del model_base
-            model_base = None    # FIXED: Removed the duplicate "global" tag here
+            model_base = None    
             gc.collect(); 
             if torch.cuda.is_available(): torch.cuda.empty_cache()
             model_design = _safe_from_pretrained("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign", device, dtype)
@@ -417,7 +421,7 @@ def run_podcast_engine(script_text, lang, do_norm, do_trim, do_srt, out_format, 
             if do_norm:
                 max_amp = np.max(np.abs(y))
                 if max_amp > 0: y = y / max_amp * 0.95
-            if do_trim or do_norm: sf.write(final_drive_path, y, sr_load)
+            if do_trim or do_norm: f = sf.write(final_drive_path, y, sr_load)
             if do_srt:
                 res = whisper_model.transcribe(final_drive_path)
                 srt_path = final_drive_path.replace(".wav", ".srt")
@@ -536,14 +540,33 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
 
     gr.HTML("""
     <style>
+        /* Modern Subscription Button */
         .yt-subscribe-btn {
             display: inline-block; padding: 14px 28px; background-color: #ff0000; color: #ffffff !important;
             font-weight: 800; text-decoration: none; border-radius: 8px; font-size: 18px;
             transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); box-shadow: 0 4px 10px rgba(255, 0, 0, 0.4); cursor: pointer;
         }
         .yt-subscribe-btn:hover { background-color: #cc0000; transform: scale(1.05); box-shadow: 0 6px 18px rgba(255, 0, 0, 0.6); }
-        .pro-console textarea { border: 1px solid #7b61ff; box-shadow: inset 0 0 5px rgba(123,97,255,0.2); }
+        
+        /* Pro Console Styling */
+        .pro-console textarea { border: 1px solid #7b61ff; box-shadow: inset 0 0 8px rgba(123,97,255,0.15); background-color: #1a1a24; }
+        
+        /* Premium VRAM Badge Styling */
+        .vram-badge {
+            font-family: 'Courier New', monospace; font-size: 14px; font-weight: 600; color: #10b981; 
+            background: #111827; padding: 12px; border-radius: 8px; border: 1px solid #374151; 
+            text-align: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.5); width: 100%;
+        }
+        .vram-badge b { color: #fff; }
+        
+        /* Global Button Hover Physics */
+        button.primary { transition: all 0.25s ease !important; }
+        button.primary:hover { transform: scale(1.02); box-shadow: 0 4px 15px rgba(123, 97, 255, 0.4) !important; }
+        
+        button.stop { transition: all 0.25s ease !important; }
+        button.stop:hover { transform: scale(1.02); box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4) !important; }
     </style>
+    
     <div style="text-align: center; margin-bottom: 20px;">
         <img src="https://github.com/TechTheoryLab/TechTheoryLab-Assets/blob/main/Tech%20Theory%20Lab%20Banner.png?raw=true"
              style="max-width: 100%; height: auto; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
@@ -554,10 +577,11 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="indigo")) as app:
     </div>
     """)
 
+    # Hardware Telemetry Bar with Dynamic Model Sniffer
     with gr.Row():
         clear_vram_btn = gr.Button("🧹 Clear GPU Memory", variant="stop", scale=1)
         vram_refresh_btn = gr.Button("🔄 Refresh Stats", scale=1)
-        vram_status = gr.Textbox(value=get_vram_status(), interactive=False, scale=4, show_label=False)
+        vram_status = gr.HTML(value=get_vram_status())
         
     clear_vram_btn.click(fn=manual_clear_vram, outputs=[vram_status])
     vram_refresh_btn.click(fn=get_vram_status, outputs=[vram_status])
