@@ -523,8 +523,15 @@ def run_batch(mode, text_list, lang, desc, clone_preset, custom_prefix, do_srt, 
                 final_dub_file = convert_audio_format(g_wav_filepath, out_format)
                 all_downloadable_files.append(final_dub_file)
 
+        # 🎯 NEW: Create a ZIP Archive of the entire batch folder
+        progress(0.95, desc="Zipping all files...")
+        zip_path = shutil.make_archive(batch_folder, 'zip', batch_folder)
+        
+        # Insert the ZIP file at the very TOP of the download list (index 0)
+        all_downloadable_files.insert(0, zip_path)
+
         progress(1.0, desc="Batch Complete!")
-        status_log.append(f"✅ Batch Complete! All files saved to: {batch_folder}")
+        status_log.append(f"✅ Batch Complete! All files zipped for easy download.")
         yield all_downloadable_files, "\n".join(status_log)
 
     except Exception as e:
@@ -541,14 +548,35 @@ gr.close_all()
 with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
 
     # 🌟 CUSTOM YOUTUBE BRANDING BANNER 🌟
+    # CSS added for pointer cursor, scaling hover effect, and vivid shadows to make it highly clickable
     gr.HTML("""
+    <style>
+        .yt-subscribe-btn {
+            display: inline-block;
+            padding: 14px 28px;
+            background-color: #ff0000;
+            color: #ffffff !important;
+            font-weight: 800;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 18px;
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+            box-shadow: 0 4px 10px rgba(255, 0, 0, 0.4);
+            cursor: pointer;
+        }
+        .yt-subscribe-btn:hover {
+            background-color: #cc0000;
+            transform: scale(1.05);
+            box-shadow: 0 6px 18px rgba(255, 0, 0, 0.6);
+        }
+    </style>
+    
     <div style="text-align: center; margin-bottom: 20px;">
         <img src="https://github.com/TechTheoryLab/TechTheoryLab-Assets/blob/main/Tech%20Theory%20Lab%20Banner.png?raw=true"
              style="max-width: 100%; height: auto; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
         <br><br>
-        <a href="https://www.youtube.com/@TechTheoryLab?sub_confirmation=1" target="_blank"
-           style="display: inline-block; padding: 12px 24px; background-color: #ff0000; color: #ffffff; font-weight: bold; text-decoration: none; border-radius: 6px; font-size: 16px; transition: background-color 0.3s ease; box-shadow: 0 4px 10px rgba(255,0,0,0.4);">
-            ▶️ SUBSCRIBE TO TECH THEORY LAB
+        <a href="https://www.youtube.com/@TechTheoryLab?sub_confirmation=1" target="_blank" class="yt-subscribe-btn">
+            ▶️ SUBSCRIBE TO THE CHANNEL
         </a>
     </div>
     """)
@@ -584,7 +612,11 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                             vd_srt = gr.Checkbox(label="📝 Generate .SRT", value=True)
 
                     vd_format = gr.Dropdown(choices=["WAV", "MP3", "FLAC", "OGG"], value="MP3", label="Output Format")
-                    vd_btn = gr.Button("✨ Generate Polished Audio", variant="primary", size="lg")
+                    
+                    # Grouped generate and stop buttons
+                    with gr.Row():
+                        vd_btn = gr.Button("✨ Generate Polished Audio", variant="primary", scale=3)
+                        vd_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1)
 
                 # Right Column: Presets & Outputs
                 with gr.Column(scale=1):
@@ -600,10 +632,12 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                     vd_download = gr.File(label="📥 Download Files", file_count="multiple", interactive=False)
                     vd_status = gr.Textbox(label="Status Console", lines=3)
 
-            # Wiring
+            # Wiring with Cancellation logic
             vd_preset_dropdown.change(fn=apply_preset, inputs=[vd_preset_dropdown], outputs=[vd_desc, vd_lang])
             vd_save_preset_btn.click(fn=save_preset_to_drive, inputs=[vd_preset_name, vd_desc, vd_lang], outputs=[vd_preset_dropdown, vd_status])
-            vd_btn.click(fn=btn_design_wrapper, inputs=[vd_text, vd_lang, vd_filename, vd_chunking, vd_format, vd_desc, vd_norm, vd_trim, vd_srt], outputs=[vd_audio, vd_download, vd_status])
+            
+            vd_event = vd_btn.click(fn=btn_design_wrapper, inputs=[vd_text, vd_lang, vd_filename, vd_chunking, vd_format, vd_desc, vd_norm, vd_trim, vd_srt], outputs=[vd_audio, vd_download, vd_status])
+            vd_stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[vd_event])
 
         # --- TAB 2: VOICE CLONE ---
         with gr.Tab("Voice Clone"):
@@ -631,7 +665,11 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                             vc_srt = gr.Checkbox(label="📝 Generate .SRT", value=True)
 
                     vc_format = gr.Dropdown(choices=["WAV", "MP3", "FLAC", "OGG"], value="MP3", label="Output Format")
-                    vc_btn = gr.Button("🧬 Clone Voice & Generate Audio", variant="primary", size="lg")
+                    
+                    # Grouped generate and stop buttons
+                    with gr.Row():
+                        vc_btn = gr.Button("🧬 Clone Voice & Generate Audio", variant="primary", scale=3)
+                        vc_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1)
 
                 # Right Column: Presets & Outputs
                 with gr.Column(scale=1):
@@ -647,10 +685,12 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                     vc_download = gr.File(label="📥 Download Files", file_count="multiple", interactive=False)
                     vc_status = gr.Textbox(label="Status Console", lines=3)
 
-            # Wiring
+            # Wiring with Cancellation logic
             vc_preset_dropdown.change(fn=apply_clone_preset, inputs=[vc_preset_dropdown], outputs=[vc_ref_audio, vc_ref_text, vc_lang])
             vc_save_preset_btn.click(fn=save_clone_preset, inputs=[vc_preset_name, vc_ref_audio, vc_ref_text, vc_lang], outputs=[vc_preset_dropdown, vc_status])
-            vc_btn.click(fn=btn_clone_wrapper, inputs=[vc_target_text, vc_lang, vc_filename, vc_chunking, vc_format, vc_ref_audio, vc_ref_text, vc_xvector, vc_norm, vc_trim, vc_srt], outputs=[vc_audio, vc_download, vc_status])
+            
+            vc_event = vc_btn.click(fn=btn_clone_wrapper, inputs=[vc_target_text, vc_lang, vc_filename, vc_chunking, vc_format, vc_ref_audio, vc_ref_text, vc_xvector, vc_norm, vc_trim, vc_srt], outputs=[vc_audio, vc_download, vc_status])
+            vc_stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[vc_event])
 
         # --- TAB 3: VIRAL BATCH GENERATOR ---
         with gr.Tab("Batch Generator"):
@@ -684,14 +724,20 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                         batch_srt = gr.Checkbox(label="📝 Auto-Generate .SRT Captions for EVERY file", value=True)
                         batch_format = gr.Dropdown(choices=["WAV", "MP3", "FLAC", "OGG"], value="MP3", label="Output Format")
 
-                    batch_btn = gr.Button("⚡ Run Super-Batch Processing", variant="primary", size="lg")
+                    # Grouped generate and stop buttons
+                    with gr.Row():
+                        batch_btn = gr.Button("⚡ Run Super-Batch Processing", variant="primary", scale=3)
+                        batch_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1)
+                        
                     batch_downloads = gr.File(label="📥 Download Generated Batch Archive", interactive=False)
                     batch_status = gr.Textbox(label="Batch Status Log", interactive=False, lines=4)
 
-            # Wiring
+            # Wiring with Cancellation logic
             def toggle_batch_mode(mode): return (gr.update(visible=True), gr.update(visible=False)) if mode == "Voice Design" else (gr.update(visible=False), gr.update(visible=True))
             batch_mode.change(fn=toggle_batch_mode, inputs=[batch_mode], outputs=[design_row, clone_row])
-            batch_btn.click(fn=run_batch, inputs=[batch_mode, batch_text, batch_lang, batch_desc, batch_clone_preset, batch_prefix, batch_srt, batch_target_langs, batch_format], outputs=[batch_downloads, batch_status])
+            
+            batch_event = batch_btn.click(fn=run_batch, inputs=[batch_mode, batch_text, batch_lang, batch_desc, batch_clone_preset, batch_prefix, batch_srt, batch_target_langs, batch_format], outputs=[batch_downloads, batch_status])
+            batch_stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[batch_event])
 
         # --- TAB 4: PODCAST STUDIO ---
         with gr.Tab("Podcast Studio"):
@@ -750,13 +796,17 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                             pod_trim = gr.Checkbox(label="✂️ Trim Master", value=True)
                             pod_srt = gr.Checkbox(label="📝 Generate Master .SRT", value=True)
 
-                    pod_btn = gr.Button("🎧 Compile Full Episode", variant="primary", size="lg")
+                    # Grouped generate and stop buttons
+                    with gr.Row():
+                        pod_btn = gr.Button("🎧 Compile Full Episode", variant="primary", scale=3)
+                        pod_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1)
+                        
                     pod_audio = gr.Audio(label="Master Podcast Output")
                     pod_download = gr.File(label="📥 Download Assets", file_count="multiple", interactive=False)
                     pod_status = gr.Textbox(label="Podcast Console Log", lines=4)
 
-            # Wiring
-            pod_btn.click(
+            # Wiring with Cancellation logic
+            pod_event = pod_btn.click(
                 fn=run_podcast_engine,
                 inputs=[
                     pod_script, pod_lang, pod_norm, pod_trim, pod_srt, pod_format,
@@ -767,6 +817,7 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                 ],
                 outputs=[pod_audio, pod_download, pod_status]
             )
+            pod_stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[pod_event])
 
         # --- TAB 5: POST-PROCESSING & FX MIXER ---
         with gr.Tab("FX Mixer"):
@@ -790,7 +841,11 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                         pp_speed = gr.Slider(minimum=0.8, maximum=1.5, value=1.0, step=0.05, label="⏱️ Speed Adjust")
 
                     pp_format = gr.Dropdown(choices=["WAV", "MP3", "FLAC", "OGG"], value="MP3", label="Final Output Format")
-                    pp_btn = gr.Button("⚡ Apply FX & Mix", variant="primary", size="lg")
+                    
+                    # Grouped generate and stop buttons
+                    with gr.Row():
+                        pp_btn = gr.Button("⚡ Apply FX & Mix", variant="primary", scale=3)
+                        pp_stop_btn = gr.Button("🛑 Stop", variant="stop", scale=1)
 
                 # Right Column: Output
                 with gr.Column(scale=1):
@@ -799,8 +854,9 @@ with gr.Blocks(theme=gr.themes.Default(primary_hue="indigo")) as app:
                     pp_downloads = gr.File(label="📥 Download Mastered Files", file_count="multiple", interactive=False)
                     pp_status = gr.Textbox(label="Mixer Console Log", lines=8)
 
-            # Wiring
-            pp_btn.click(fn=process_audio_studio, inputs=[pp_audio_in, pp_norm, pp_trim, pp_speed, pp_srt, pp_bgm_in, pp_bgm_vol, pp_format], outputs=[pp_audio_out, pp_downloads, pp_status])
+            # Wiring with Cancellation logic
+            pp_event = pp_btn.click(fn=process_audio_studio, inputs=[pp_audio_in, pp_norm, pp_trim, pp_speed, pp_srt, pp_bgm_in, pp_bgm_vol, pp_format], outputs=[pp_audio_out, pp_downloads, pp_status])
+            pp_stop_btn.click(fn=None, inputs=None, outputs=None, cancels=[pp_event])
 
 print("Starting Tech Theory Lab Pro Studio...")
 app.launch(inline=True, share=True, debug=True, show_error=True)
